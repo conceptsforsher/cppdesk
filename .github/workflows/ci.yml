@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ stepbystep, next ]
+    # wip/** = scratch branches for in-progress steps. CI is the only build
+    # environment for this repo (no local builds), so work branches need it too.
+    branches: [ stepbystep, next, 'wip/**' ]
   pull_request:
 
 jobs:
