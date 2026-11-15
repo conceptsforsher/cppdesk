@@ -37,26 +37,33 @@ Full per-step log: [examples/INDEX.md](examples/INDEX.md).
 
 ## Building (root or any snapshot)
 
-Agent builds MUST follow [AGENTS.md](AGENTS.md): gate `-j` on available RAM
-(`<1.5 GB` wait, `1.5 GB` → `-j1`, `3 GB` → `-j2`, `4.5 GB+` → `-j3`, never above `-j3`).
+GitHub Actions is the build environment
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Every push to
+`stepbystep` or `wip/**`, and every pull request, builds the root tree and
+runs ctest, and also builds each protobuf-era snapshot standalone. Agents do
+not build on the development machine (see [AGENTS.md](AGENTS.md)).
+
+Dependencies (Ubuntu): `cmake ninja-build g++ libprotobuf-dev protobuf-compiler
+libsodium-dev libzstd-dev libssl-dev`. CI runs:
 
 ```bash
-cmake -B /tmp/cppdesk-build -S . -DCMAKE_BUILD_TYPE=Release
-cmake --build /tmp/cppdesk-build --parallel "$JOBS"  # $JOBS from AGENTS.md rule
-/tmp/cppdesk-build/cppdesk
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel 3
+ctest --test-dir build --output-on-failure
+./build/cppdesk
 ```
 
 Each `examples/NN_*/` snapshot builds standalone the same way:
 
 ```bash
-cmake -B /tmp/b-13 -S examples/13_d1013487_source_code_part10 -DCMAKE_BUILD_TYPE=Release
-cmake --build /tmp/b-13 --parallel "$JOBS"
+cmake -B build-13 -S examples/13_d1013487_source_code_part10 -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-13 --parallel 3
 ```
 
 ## Layout
 
 ```
-AGENTS.md                   — agent instructions (mandatory RAM-based -j rule)
+AGENTS.md                   — agent instructions (CI-only builds; RAM-based -j rule)
 CMakeLists.txt              — live build (current step state)
 cmake/version.hpp.in        — version template (build.rs gen_version() parity)
 LICENSE                     — upstream license, verbatim
