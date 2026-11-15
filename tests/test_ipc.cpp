@@ -763,6 +763,14 @@ bool live_default_daemon() {
 
 void test_client_helpers() {
     if (live_default_daemon()) {
+        // Never disturb a real daemon. CI runners have none, so a skip there
+        // means something is wrong: fail instead of silently skipping.
+        const char* ci = std::getenv("GITHUB_ACTIONS");
+        if (ci && std::string(ci) == "true") {
+            ++g_failures;
+            std::fprintf(stderr, "FAIL: unexpected live IPC daemon at postfix \"\" on CI\n");
+            return;
+        }
         std::puts("SKIP test_client_helpers: a live IPC daemon answers at postfix \"\"");
         return;
     }

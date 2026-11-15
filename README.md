@@ -25,54 +25,68 @@ Method mirrors the `stepbystep` branch of `progressive-server`
 | 11 | [`d1013487`](https://github.com/rustdesk/rustdesk/commit/d1013487e2f3862e2f801ef1a704bb61fdff8bbb) | 2021-03-29 | source code, part 8: client login layer | `examples/11_d1013487_source_code_part8/` |
 | 12 | [`d1013487`](https://github.com/rustdesk/rustdesk/commit/d1013487e2f3862e2f801ef1a704bb61fdff8bbb) | 2021-03-29 | source code, part 9: client connection + crypto | `examples/12_d1013487_source_code_part9/` |
 | 13 | [`d1013487`](https://github.com/rustdesk/rustdesk/commit/d1013487e2f3862e2f801ef1a704bb61fdff8bbb) | 2021-03-29 | source code, part 10: server foundation | `examples/13_d1013487_source_code_part10/` |
+| 14 | [`d1013487`](https://github.com/rustdesk/rustdesk/commit/d1013487e2f3862e2f801ef1a704bb61fdff8bbb) | 2021-03-29 | source code, part 11: ipc (ipc.rs + parity-tokio-ipc) | `examples/14_d1013487_source_code_part11/` |
 
 One upstream commit may span several steps when it is too large for a single
 accurate port (here `d1013487`: 175 files). Parts are numbered in the step
 subject until the commit is fully translated.
 
-Next in upstream `master` order: `d1013487` parts 11+ (Connection loop, ipc,
-platform/ui, entry), then `f43f5df9`.
+Next in upstream `master` order: `d1013487` parts 12+ (Connection loop +
+rest of server.rs, port_forward, platform/ui, entry), then `f43f5df9`.
 
 Full per-step log: [examples/INDEX.md](examples/INDEX.md).
 
 ## Building (root or any snapshot)
 
-Agent builds MUST follow [AGENTS.md](AGENTS.md): gate `-j` on available RAM
-(`<1.5 GB` wait, `1.5 GB` → `-j1`, `3 GB` → `-j2`, `4.5 GB+` → `-j3`, never above `-j3`).
+GitHub Actions is the build environment
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Every push to
+`stepbystep` or `wip/**`, and every pull request, builds the root tree and
+runs ctest, and also builds each protobuf-era snapshot standalone. Agents do
+not build on the development machine (see [AGENTS.md](AGENTS.md)).
+
+Dependencies (Ubuntu): `cmake ninja-build g++ libprotobuf-dev protobuf-compiler
+libsodium-dev libzstd-dev libssl-dev`. CI runs:
 
 ```bash
-cmake -B /tmp/cppdesk-build -S . -DCMAKE_BUILD_TYPE=Release
-cmake --build /tmp/cppdesk-build --parallel "$JOBS"  # $JOBS from AGENTS.md rule
-/tmp/cppdesk-build/cppdesk
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel 3
+ctest --test-dir build --output-on-failure
+./build/cppdesk
 ```
 
 Each `examples/NN_*/` snapshot builds standalone the same way:
 
 ```bash
-cmake -B /tmp/b-13 -S examples/13_d1013487_source_code_part10 -DCMAKE_BUILD_TYPE=Release
-cmake --build /tmp/b-13 --parallel "$JOBS"
+cmake -B build-14 -S examples/14_d1013487_source_code_part11 -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-14 --parallel 3
 ```
 
 ## Layout
 
 ```
-AGENTS.md                   — agent instructions (mandatory RAM-based -j rule)
+AGENTS.md                   — agent instructions (CI-only builds; RAM-based -j rule)
 CMakeLists.txt              — live build (current step state)
 cmake/version.hpp.in        — version template (build.rs gen_version() parity)
 LICENSE                     — upstream license, verbatim
 libs/hbb_common/
   include/hbb_common/       — ported module headers (addr_mangle, bytes_codec, compress, util,
-                              toml, config, tcp, udp, fs, crypto)
+                              toml, json, config, tcp, udp, fs, crypto)
   src/                      — ported module sources
   protos/                   — upstream .proto files (+ C++ scoping fixes, see step 07)
-  protos/gen/               — checked-in protoc output (regen: step 07 README)
+  protos/gen/               — checked-in protoc output (fallback when protoc is missing;
+                              CI generates at build time)
+libs/parity-tokio-ipc/      — vendored IPC transport (lib.rs + unix.rs; step 14, MIT/Apache-2.0)
 src/main.cpp                — live placeholder binary (tracks HEAD step)
 src/common.cpp              — app entry-layer impl (NAT/rendezvous/update tasks, step 08)
+src/ipc.cpp                 — src/ipc.rs impl (IPC daemon, framing, client helpers, step 14)
 src/platform/windows.cc     — upstream Win32 helpers, verbatim (WIN32-only build)
 src/tray-icon.ico           — upstream icon, verbatim
 include/rustdesk/
   common.hpp                — app entry-layer header (src/common.rs parity, step 08)
-tests/                      — CTest parity for upstream #[cfg(test)] modules
+  ipc.hpp                   — src/ipc.rs: Data/FS, framed IPC connection, daemon + client
+                              helpers (step 14)
+tests/                      — CTest parity for upstream #[cfg(test)] modules, plus
+                              coverage for modules upstream leaves untested
 examples/
   INDEX.md                  — step index (upstream hash, date, subject)
   01_35b260e1_initial_commit/
@@ -103,6 +117,8 @@ examples/
     ... + libs/ src/ include/ tests/ cmake/ LICENSE — full frozen workspace for step 12
   13_d1013487_source_code_part10/
     ... + libs/ src/ include/ tests/ cmake/ LICENSE — full frozen workspace for step 13
+  14_d1013487_source_code_part11/
+    ... + libs/ src/ include/ tests/ cmake/ LICENSE — full frozen workspace for step 14
 ```
 
 Rule: the repo root always reflects the latest translated step; `examples/`

@@ -1,6 +1,29 @@
 # AGENTS.md — cppdesk agent instructions
 
-## Build parallelism — RAM-based `-j` rule (mandatory)
+## Builds run in GitHub Actions only (mandatory)
+
+Do not build or test on the development machine: no cmake/ninja/make, no
+compiler invocations (not even `-fsyntax-only`), no ctest. CI
+(`.github/workflows/ci.yml`) is the build environment. It builds the root
+tree, runs ctest, and builds every protobuf-era snapshot standalone.
+
+Workflow for a step:
+
+1. Commit work in progress on a `wip/<topic>` branch and push it. Pushes to
+   `wip/**` trigger CI.
+2. Read the result: `gh run list -R conceptsforsher/cppdesk --branch wip/<topic>`,
+   then `gh run view <run-id> -R conceptsforsher/cppdesk --log-failed` (or
+   `--job <id> --log` to check test output and warnings on a green run).
+3. Iterate until green. Then land one clean, squashed commit per step on
+   `stepbystep` (`feat: add step NN (...)`); CI runs again there.
+
+Every compile check is a CI round trip, so review new code carefully before
+pushing.
+
+The RAM-gated `-j` rule below applies only when the user explicitly asks for
+a local build.
+
+## Build parallelism — RAM-based `-j` rule (local builds only)
 
 Low-RAM environment. NEVER use plain `-j$(nproc)` or unbounded `--parallel`.
 Always gate parallelism on **available** RAM (`MemAvailable`).
