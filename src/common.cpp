@@ -1,6 +1,8 @@
 // common.cpp — see common.hpp.
 #include <rustdesk/common.hpp>
 
+#include <rustdesk/ipc.hpp>
+
 #include <cppdesk/version.hpp>
 
 #include <hbb_common/tcp.hpp>
@@ -18,6 +20,14 @@
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
+
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+// #[cfg(any(target_os = "android", target_os = "ios"))]
+#if defined(__ANDROID__) || (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
+#define CPPDESK_MOBILE 1
 #endif
 
 namespace rustdesk {
@@ -42,7 +52,7 @@ int64_t parse_version_part(const std::string& part) {
 // test_nat_type_() parity: two rendezvous connections, compare observed ports.
 bool test_nat_type_impl() {
     using namespace hbb_common;
-    const ResolvedAddr rendezvous = get_rendezvous_server(0);
+    const ResolvedAddr rendezvous = get_rendezvous_server(100);  // upstream: 100 ms
     ResolvedAddr server1 = rendezvous;
     ResolvedAddr server2 = rendezvous;
     server2.port = static_cast<uint16_t>(server1.port - 1);  // set_port(port-1) parity
@@ -329,12 +339,22 @@ void check_software_update() {
     std::thread(check_software_update_impl).detach();
 }
 
+#if defined(CPPDESK_MOBILE)
 hbb_common::ResolvedAddr get_rendezvous_server(uint64_t /*timeout_ms*/) {
-    return hbb_common::get_rendezvous_server();  // IPC override deferred to ipc step
+    return hbb_common::get_rendezvous_server();
 }
 
 int32_t get_nat_type(uint64_t /*timeout_ms*/) {
-    return hbb_common::get_nat_type();  // IPC override deferred to ipc step
+    return hbb_common::get_nat_type();
 }
+#else
+hbb_common::ResolvedAddr get_rendezvous_server(uint64_t timeout_ms) {
+    return ipc::get_rendezvous_server(timeout_ms);
+}
+
+int32_t get_nat_type(uint64_t timeout_ms) {
+    return ipc::get_nat_type(timeout_ms);
+}
+#endif
 
 }  // namespace rustdesk

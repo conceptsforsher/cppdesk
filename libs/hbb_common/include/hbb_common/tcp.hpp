@@ -43,7 +43,9 @@ public:
 
     // Connect to remote_addr with optional local bind and timeout (ms).
     // Mirrors `FramedStream::new(remote_addr, local_addr, ms_timeout)`.
-    // Returns nullopt on timeout or connection failure.
+    // Returns nullopt on timeout or connection failure. The timeout bounds
+    // the connect only (`timeout(ms, connect)` parity), so the returned
+    // stream has no socket timeouts.
     static std::optional<TcpFramedStream> connect(
         const ResolvedAddr& remote_addr,
         const ResolvedAddr& local_addr,
@@ -70,12 +72,21 @@ public:
     // Send pre-constructed bytes (for already-encoded frames).
     bool send_bytes(const std::vector<uint8_t>& msg);
 
-    // Receive next frame. Returns nullopt on timeout/EOF, empty vector on
-    // protocol error, or the decoded payload.
+    // Receive next frame. Returns nullopt on timeout/EOF (peer_closed() tells
+    // them apart), or the decoded payload. Bytes past the frame stay buffered
+    // for the next call, so frames larger than one recv() and several frames
+    // in one recv() both decode (tokio_util Framed parity).
     std::optional<std::vector<uint8_t>> next();
 
-    // Receive with explicit timeout (ms). Overrides socket timeout for this call.
+    // Receive with explicit timeout (ms). Overrides the socket receive timeout
+    // for this call only and restores the previous value afterwards (including
+    // 0 = blocking). A frame cut short by the timeout stays buffered.
     std::optional<std::vector<uint8_t>> next_timeout(uint64_t timeout_ms);
+
+    // True once the peer closed the stream or the socket failed. Upstream's
+    // `stream.next()` yields None there ("Reset by the peer"), while a
+    // timeout is a separate Elapsed error. nullopt alone cannot tell them apart.
+    bool peer_closed() const { return peer_closed_; }
 
     // Install encryption key (parity with `set_key(Key)`).
     // Throws std::invalid_argument unless the key is 32 bytes
@@ -103,16 +114,19 @@ private:
 
     int fd_ = -1;
     BytesCodec codec_;
+    // Persistent read buffer (Framed's BytesMut): bytes received but not yet
+    // decoded into a frame.
+    std::vector<uint8_t> rbuf_;
+    bool peer_closed_ = false;
 
     // Internal send/receive helpers.
     bool send_all(const uint8_t* data, size_t len);
     std::optional<std::vector<uint8_t>> recv_frame();
 
-    // Timeout helpers (set SO_RCVTIMEO/SO_SNDTIMEO).
+    // Per-call receive timeout (SO_RCVTIMEO) save/restore for next_timeout().
     void set_timeout_ms_for_call(int timeout_ms);
     void restore_timeout();
     int saved_rcv_timeout_ms_ = 0;
-    int saved_snd_timeout_ms_ = 0;
 };
 
 // TCP listener wrapper (parity with `new_listener`).
@@ -126,7 +140,9 @@ public:
     TcpListener(TcpListener&& other) noexcept;
     TcpListener& operator=(TcpListener&& other) noexcept;
 
-    // Accept next connection (blocking with timeout).
+    // Accept next connection (blocking with timeout). The accepted stream
+    // starts with no socket timeouts (Linux would otherwise copy the
+    // listener's accept timeout into it).
     std::optional<TcpFramedStream> accept(uint64_t timeout_ms = 0);
 
     int fd() const { return fd_; }

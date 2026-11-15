@@ -34,7 +34,8 @@ cppdesk_test(test_common)
 target_include_directories(test_common PRIVATE ../include)
 # The app object itself (src/common.cpp) is compiled into the test so the
 # helpers are exercised, not stubbed.
-target_sources(test_common PRIVATE ../src/common.cpp)
+target_sources(test_common PRIVATE ../src/common.cpp ../src/ipc.cpp)
+target_link_libraries(test_common PRIVATE parity_tokio_ipc)
 target_include_directories(
     test_common
     PRIVATE
@@ -68,7 +69,8 @@ target_include_directories(
 cppdesk_test(test_client)
 target_include_directories(test_client PRIVATE ../include)
 target_sources(test_client PRIVATE ../src/client.cpp ../src/common.cpp ../src/key_map.cpp
-                                   ../src/rendezvous_mediator.cpp)
+                                   ../src/rendezvous_mediator.cpp ../src/ipc.cpp)
+target_link_libraries(test_client PRIVATE parity_tokio_ipc)
 target_include_directories(
     test_client
     PRIVATE
@@ -82,9 +84,27 @@ target_link_libraries(test_client PRIVATE ${TEST_CRYPTO_LIBRARY} ${PROTOBUF_LIBR
 # integration deferred to crypto step). Needs app + generated includes.
 cppdesk_test(test_mediator)
 target_include_directories(test_mediator PRIVATE ../include)
-target_sources(test_mediator PRIVATE ../src/rendezvous_mediator.cpp ../src/common.cpp)
+target_sources(test_mediator PRIVATE ../src/rendezvous_mediator.cpp ../src/common.cpp
+                                     ../src/ipc.cpp)
+target_link_libraries(test_mediator PRIVATE parity_tokio_ipc)
 target_include_directories(
     test_mediator
     PRIVATE
         ${CMAKE_BINARY_DIR}/generated
 )
+# serde_json stand-in (hbb_common/json.hpp): serde_json-exact output, strict
+# parsing, UTF-8 validation (upstream has no JSON tests; ipc.rs relies on it).
+cppdesk_test(test_json)
+# libs/parity-tokio-ipc: lib.rs smoke_test parity (echo over a Unix socket,
+# two clients) + the vendored unix.rs quirks (chmod-before-bind, no unlink).
+cppdesk_test(test_parity_tokio_ipc)
+target_link_libraries(test_parity_tokio_ipc PRIVATE parity_tokio_ipc)
+# src/ipc.rs: Data/FS serde shapes, framing, the ipc server's handle()
+# (in-process and as a re-exec'd child process for postfix "" and Close),
+# check_pid/write_pid, and the client helpers against a live daemon.
+# Hermetic: HOME/XDG_CONFIG_HOME point at a temp dir; skips the postfix ""
+# cases when a live IPC daemon already owns /tmp/RustDesk/ipc.
+cppdesk_test(test_ipc)
+target_include_directories(test_ipc PRIVATE ../include ${CMAKE_BINARY_DIR}/generated)
+target_sources(test_ipc PRIVATE ../src/ipc.cpp ../src/common.cpp)
+target_link_libraries(test_ipc PRIVATE parity_tokio_ipc)
