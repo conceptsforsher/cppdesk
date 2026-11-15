@@ -35,9 +35,12 @@ endif()
 # Only hbb_common exists yet (part 1 of d1013487); scrap/enigo arrive as
 # native C++ modules in later steps, mirroring the old cppdesk libs/ layout.
 add_subdirectory(libs/hbb_common)
+# Path dependency of the app crate (Cargo.toml: parity-tokio-ipc = { path =
+# "libs/parity-tokio-ipc" }), the transport under src/ipc.rs. Step 14.
+add_subdirectory(libs/parity-tokio-ipc)
 
 # App crate parity (src/lib.rs module map): first-party app sources compile
-# into the cppdesk binary directly. Later steps add client/server/ipc/ui here;
+# into the cppdesk binary directly. Later steps add platform/ui here;
 # a librustdesk split happens only if link times demand it.
 #
 # OpenSSL libcrypto (sha2 crate parity for the login handshake hashes).
@@ -50,7 +53,8 @@ endif()
 
 add_executable(cppdesk src/main.cpp src/common.cpp src/rendezvous_mediator.cpp src/client.cpp
                        src/key_map.cpp src/connection.cpp src/server.cpp src/audio_service.cpp
-                       src/video_service.cpp src/clipboard_service.cpp src/input_service.cpp)
+                       src/video_service.cpp src/clipboard_service.cpp src/input_service.cpp
+                       src/ipc.cpp)
 target_include_directories(
     cppdesk
     PRIVATE
@@ -60,7 +64,7 @@ target_include_directories(
         # (build-time protos_gen, or the checked-in protos/gen fallback)
         ${OPENSSL_INCLUDE_DIR}
 )
-target_link_libraries(cppdesk PRIVATE hbb_common cppdesk_protobuf ${CRYPTO_LIBRARY})
+target_link_libraries(cppdesk PRIVATE hbb_common parity_tokio_ipc cppdesk_protobuf ${CRYPTO_LIBRARY})
 # NOTE: cppdesk_protobuf is defined above and shared with libs/hbb_common;
 # common.cpp calls libprotobuf directly.
 

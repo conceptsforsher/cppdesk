@@ -9,6 +9,9 @@
 #   confy/dirs-next/directories-next -> config step (05, path scheme first)
 #   serde/serde_derive/confy/filetime/rand/log/env_logger/anyhow/mac_address
 #                    -> mapped per module as its owner step lands
+#   serde_json     -> src/json.cpp (step 14; minimal stand-in, the same
+#                    approach as toml.cpp for confy. The app's ipc.rs is its
+#                    first user)
 #   protobuf-codegen-pure [build-dep] -> protoc, run once per .proto change;
 #                    output checked in under protos/gen (see step 07 README)
 
@@ -76,6 +79,7 @@ add_library(hbb_common STATIC
     src/bytes_codec.cpp
     src/compress.cpp
     src/toml.cpp
+    src/json.cpp
     src/config.cpp
     src/tcp.cpp
     src/udp.cpp

@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -36,6 +37,14 @@ struct ResolvedAddr {
 // fails resolution upstream too). Throws std::runtime_error
 // ("Failed to solve {host}" parity) when nothing resolves.
 ResolvedAddr to_socket_addr(const std::string& host);
+
+// `impl Display for SocketAddr` parity: "1.2.3.4:21116" / "[::1]:21116".
+std::string to_string(const ResolvedAddr& addr);
+
+// `str::parse::<SocketAddr>()` parity: numeric "a.b.c.d:port" or
+// "[v6]:port" only (no name resolution, no surrounding whitespace). The ip
+// comes back in canonical inet_ntop form. nullopt on any syntax error.
+std::optional<ResolvedAddr> parse_socket_addr(const std::string& s);
 
 // `new_socket(addr, tcp, reuse)` parity: create + (optionally)
 // SO_REUSEADDR (+ SO_REUSEPORT on Linux, matching upstream's unix cfg) +

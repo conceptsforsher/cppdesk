@@ -1,14 +1,12 @@
-// main.cpp — cppdesk step 13 (part 10 of upstream d1013487 "source code").
+// main.cpp — cppdesk step 14 (part 11 of upstream d1013487 "source code").
 //
-// src/main.rs argv dispatch is deferred until ipc/platform/ui land, so the
-// binary stays a step placeholder — now linking the server foundation
-// (service framework, ConnInner queue, service shells, Server registry,
-// zombie reaper) alongside client/mediator/hbb_common.
+// src/main.rs argv dispatch is deferred until connection/platform/ui land,
+// so the binary stays a step placeholder. It now links the IPC layer
+// (src/ipc.rs + libs/parity-tokio-ipc) alongside the server foundation,
+// client, mediator and hbb_common.
 //
-// Smoke test (JOBS per AGENTS.md RAM rule):
-//   cmake -B /tmp/b -S . -DCMAKE_BUILD_TYPE=Release && \
-//   cmake --build /tmp/b --parallel "$JOBS" && /tmp/b/cppdesk && \
-//   ctest --test-dir /tmp/b --output-on-failure
+// Build + test happen in GitHub Actions (.github/workflows/ci.yml); see
+// README.md for the equivalent local commands.
 
 #include <cppdesk/version.hpp>
 
@@ -16,7 +14,6 @@
 
 int main() {
     std::cout << "cppdesk " << cppdesk::kVersion
-              << " step 13 (d1013487 part 10): + server foundation"
-                 " — connection/ui/platform pending.\n";
+              << " step 14 (d1013487 part 11): + ipc — connection/ui/platform pending.\n";
     return 0;
 }

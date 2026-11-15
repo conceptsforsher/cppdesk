@@ -8,9 +8,6 @@
 // Deferred with their owner steps (declared nowhere until then):
 // - check_clipboard/update_clipboard → clipboard step (needs ClipboardContext)
 // - resample_channels → audio step (needs dasp resampling)
-// - get_rendezvous_server(ms)/get_nat_type(ms) IPC override → ipc step (the
-//   desktop variants delegate to the IPC daemon; here they read Config
-//   directly, exactly like the mobile variants upstream)
 // - cli.rs Session/start_one_port_forward → client step (needs client::Interface)
 // - main.rs argv dispatch → entry step (needs server/ui/platform)
 
@@ -61,8 +58,9 @@ void test_nat_type();
 void test_rendezvous_server();
 void check_software_update();
 
-// Direct-Config variants (mobile parity; the desktop IPC override lands
-// with the ipc step).
+// Desktop: ask the IPC daemon (ipc::get_rendezvous_server / ipc::get_nat_type,
+// with a Config fallback when it is unreachable). Android/iOS: read Config
+// directly (upstream's mobile variants).
 hbb_common::ResolvedAddr get_rendezvous_server(uint64_t timeout_ms);
 int32_t get_nat_type(uint64_t timeout_ms);
 

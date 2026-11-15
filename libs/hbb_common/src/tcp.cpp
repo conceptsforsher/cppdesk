@@ -17,14 +17,28 @@
 namespace hbb_common {
 namespace {
 
-// Set socket send/receive timeout (ms). 0 = infinite (blocking).
-void sock_set_timeout(int fd, int timeout_ms) {
+// Set one socket timeout option (SO_RCVTIMEO / SO_SNDTIMEO) in ms; 0 = blocking.
+void sock_set_one_timeout(int fd, int opt, int timeout_ms) {
     if (timeout_ms < 0) timeout_ms = 0;
     struct timeval tv;
     tv.tv_sec = timeout_ms / 1000;
     tv.tv_usec = (timeout_ms % 1000) * 1000;
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    ::setsockopt(fd, SOL_SOCKET, opt, &tv, sizeof tv);
+}
+
+int sock_get_one_timeout(int fd, int opt) {
+    struct timeval tv {};
+    socklen_t len = sizeof tv;
+    if (::getsockopt(fd, SOL_SOCKET, opt, &tv, &len) != 0) {
+        return 0;
+    }
+    return static_cast<int>(tv.tv_sec * 1000 + tv.tv_usec / 1000);
+}
+
+// Set socket send/receive timeout (ms). 0 = infinite (blocking).
+void sock_set_timeout(int fd, int timeout_ms) {
+    sock_set_one_timeout(fd, SO_RCVTIMEO, timeout_ms);
+    sock_set_one_timeout(fd, SO_SNDTIMEO, timeout_ms);
 }
 
 }  // namespace
@@ -67,8 +81,12 @@ std::optional<ResolvedAddr> TcpFramedStream::local_addr() const {
 }
 
 TcpFramedStream::TcpFramedStream(TcpFramedStream&& other) noexcept
-    : fd_(other.fd_), codec_(std::move(other.codec_)),
-      crypto_(std::move(other.crypto_)) {
+    : crypto_(std::move(other.crypto_)),
+      fd_(other.fd_),
+      codec_(std::move(other.codec_)),
+      rbuf_(std::move(other.rbuf_)),
+      peer_closed_(other.peer_closed_),
+      saved_rcv_timeout_ms_(other.saved_rcv_timeout_ms_) {
     other.fd_ = -1;
 }
 
@@ -77,9 +95,12 @@ TcpFramedStream& TcpFramedStream::operator=(TcpFramedStream&& other) noexcept {
         if (fd_ >= 0) {
             ::close(fd_);
         }
+        crypto_ = std::move(other.crypto_);
         fd_ = other.fd_;
         codec_ = std::move(other.codec_);
-        crypto_ = std::move(other.crypto_);
+        rbuf_ = std::move(other.rbuf_);
+        peer_closed_ = other.peer_closed_;
+        saved_rcv_timeout_ms_ = other.saved_rcv_timeout_ms_;
         other.fd_ = -1;
     }
     return *this;
@@ -137,6 +158,9 @@ std::optional<TcpFramedStream> TcpFramedStream::connect(
                 ::close(fd);
                 return std::nullopt;
             }
+            // `timeout(ms, connect)` bounds the connect only: clear the
+            // temporary socket timeouts so later I/O blocks like tokio's.
+            sock_set_timeout(fd, 0);
         }
         return TcpFramedStream(fd);
     } catch (...) {
@@ -196,40 +220,46 @@ bool TcpFramedStream::send_raw(const std::vector<uint8_t>& msg) {
 }
 
 std::optional<std::vector<uint8_t>> TcpFramedStream::recv_frame() {
-    std::vector<uint8_t> buf(4096);
+    // Framed parity: decode from the persistent buffer first (an earlier
+    // recv() may already hold a whole frame), read more only when the
+    // buffer has no complete frame, and keep any surplus for the next call.
+    // (The previous version decoded from a fresh 4 KiB buffer per recv(),
+    // which dropped coalesced frames and corrupted frames > 4 KiB.)
     while (true) {
-        ssize_t n = ::recv(fd_, buf.data(), buf.size(), 0);
-        if (n == 0) {
-            return std::nullopt;  // EOF
-        }
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                return std::nullopt;  // Timeout
+        auto decoded = codec_.decode(rbuf_);
+        if (!decoded) {
+            uint8_t chunk[16384];
+            const ssize_t n = ::recv(fd_, chunk, sizeof chunk, 0);
+            if (n == 0) {
+                peer_closed_ = true;
+                return std::nullopt;  // EOF
             }
-            return std::nullopt;  // Error
-        }
-        buf.resize(static_cast<size_t>(n));
-        auto decoded = codec_.decode(buf);
-        if (decoded) {
-            if (crypto_) {
-                // key.2 += 1; open with get_nonce(key.2) parity. A failed open
-                // surfaces as Some(Err("decryption error")) upstream; here it
-                // throws (loud and distinct from EOF/timeout nullopt).
-                auto& [key, seq_out, seq_in] = *crypto_;
-                (void)seq_out;
-                ++seq_in;
-                try {
-                    *decoded = crypto::secretbox_open(decoded->data(), decoded->size(),
-                                                      crypto::seq_nonce(seq_in), key);
-                } catch (const std::exception&) {
-                    throw std::runtime_error("decryption error");
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    return std::nullopt;  // Timeout (partial frame stays buffered)
                 }
+                peer_closed_ = true;
+                return std::nullopt;  // Error (reset)
             }
-            return decoded;
+            rbuf_.insert(rbuf_.end(), chunk, chunk + n);
+            continue;
         }
-        // Need more data; continue reading (this is a simplified loop;
-        // a full impl would keep a persistent read buffer).
+        if (crypto_) {
+            // key.2 += 1; open with get_nonce(key.2) parity. A failed open
+            // surfaces as Some(Err("decryption error")) upstream; here it
+            // throws (loud and distinct from EOF/timeout nullopt).
+            auto& [key, seq_out, seq_in] = *crypto_;
+            (void)seq_out;
+            ++seq_in;
+            try {
+                *decoded = crypto::secretbox_open(decoded->data(), decoded->size(),
+                                                  crypto::seq_nonce(seq_in), key);
+            } catch (const std::exception&) {
+                throw std::runtime_error("decryption error");
+            }
+        }
+        return decoded;
     }
 }
 
@@ -252,21 +282,17 @@ void TcpFramedStream::set_timeout_ms(int timeout_ms) {
 }
 
 void TcpFramedStream::set_timeout_ms_for_call(int timeout_ms) {
-    struct timeval tv;
-    socklen_t len = sizeof tv;
-    ::getsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, &len);
-    saved_rcv_timeout_ms_ = static_cast<int>(tv.tv_sec * 1000 + tv.tv_usec / 1000);
-    ::getsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, &len);
-    saved_snd_timeout_ms_ = static_cast<int>(tv.tv_sec * 1000 + tv.tv_usec / 1000);
-    sock_set_timeout(fd_, timeout_ms);
+    // Only the receive side: next_timeout() bounds one read, not sends.
+    saved_rcv_timeout_ms_ = sock_get_one_timeout(fd_, SO_RCVTIMEO);
+    sock_set_one_timeout(fd_, SO_RCVTIMEO, timeout_ms);
 }
 
 void TcpFramedStream::restore_timeout() {
-    if (saved_rcv_timeout_ms_ > 0 || saved_snd_timeout_ms_ > 0) {
-        sock_set_timeout(fd_, std::max(saved_rcv_timeout_ms_, saved_snd_timeout_ms_));
-    }
+    // Restore exactly what the socket had, 0 (blocking) included. The old
+    // version skipped the restore when the saved value was 0, which left the
+    // per-call timeout on blocking streams for every later next().
+    sock_set_one_timeout(fd_, SO_RCVTIMEO, saved_rcv_timeout_ms_);
     saved_rcv_timeout_ms_ = 0;
-    saved_snd_timeout_ms_ = 0;
 }
 
 // --- TcpListener ------------------------------------------------------------
@@ -296,6 +322,11 @@ std::optional<TcpFramedStream> TcpListener::accept(uint64_t timeout_ms) {
     }
     if (cfd < 0) {
         return std::nullopt;
+    }
+    if (timeout_ms > 0) {
+        // Linux copies SO_RCVTIMEO/SO_SNDTIMEO from the listener into the
+        // accepted socket: the accept timeout must not leak into the stream.
+        sock_set_timeout(cfd, 0);
     }
     return TcpFramedStream(cfd);
 }

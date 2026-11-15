@@ -104,6 +104,65 @@ ResolvedAddr to_socket_addr(const std::string& host) {
     return out;  // first result, like upstream's `addrs[0]`
 }
 
+std::string to_string(const ResolvedAddr& addr) {
+    if (addr.family == AF_INET6) {
+        return "[" + addr.ip + "]:" + std::to_string(addr.port);
+    }
+    return addr.ip + ":" + std::to_string(addr.port);
+}
+
+std::optional<ResolvedAddr> parse_socket_addr(const std::string& s) {
+    // Port: ASCII digits only, must fit u16 (Rust's read_port has no
+    // leading-zero rule and no sign).
+    auto parse_port = [](const std::string& p) -> std::optional<uint16_t> {
+        if (p.empty()) {
+            return std::nullopt;
+        }
+        uint32_t v = 0;
+        for (const char c : p) {
+            if (c < '0' || c > '9') {
+                return std::nullopt;
+            }
+            v = v * 10 + static_cast<uint32_t>(c - '0');
+            if (v > 65535) {
+                return std::nullopt;
+            }
+        }
+        return static_cast<uint16_t>(v);
+    };
+    char canon[INET6_ADDRSTRLEN] = {};
+    if (!s.empty() && s[0] == '[') {
+        const size_t close = s.find(']');
+        if (close == std::string::npos || close + 1 >= s.size() || s[close + 1] != ':') {
+            return std::nullopt;
+        }
+        const std::string ip = s.substr(1, close - 1);
+        struct in6_addr a6 {};
+        if (::inet_pton(AF_INET6, ip.c_str(), &a6) != 1) {
+            return std::nullopt;
+        }
+        const auto port = parse_port(s.substr(close + 2));
+        if (!port || !::inet_ntop(AF_INET6, &a6, canon, sizeof canon)) {
+            return std::nullopt;
+        }
+        return ResolvedAddr{AF_INET6, canon, *port};
+    }
+    const size_t colon = s.find(':');
+    if (colon == std::string::npos || s.find(':', colon + 1) != std::string::npos) {
+        return std::nullopt;  // bare IPv6 without brackets is not a SocketAddr
+    }
+    const std::string ip = s.substr(0, colon);
+    struct in_addr a4 {};
+    if (::inet_pton(AF_INET, ip.c_str(), &a4) != 1) {
+        return std::nullopt;
+    }
+    const auto port = parse_port(s.substr(colon + 1));
+    if (!port || !::inet_ntop(AF_INET, &a4, canon, sizeof canon)) {
+        return std::nullopt;
+    }
+    return ResolvedAddr{AF_INET, canon, *port};
+}
+
 int new_socket(const ResolvedAddr& addr, bool tcp, bool reuse) {
     const int fd = ::socket(addr.family, tcp ? SOCK_STREAM : SOCK_DGRAM, 0);
     if (fd < 0) {
