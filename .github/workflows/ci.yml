@@ -30,6 +30,10 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+      # The step banner each snapshot README quotes.
+      - name: Smoke
+        run: ./build/cppdesk
+
   snapshots:
     # The README promises each examples/NN_*/ snapshot builds standalone.
     # Snapshots 01-06 carry no code; 07 is the first with protobuf.
