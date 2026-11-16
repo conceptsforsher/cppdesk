@@ -51,7 +51,16 @@ public:
         const ResolvedAddr& local_addr,
         uint64_t timeout_ms);
 
-    // Switch to raw mode (disable length-delimited framing).
+    // tokio::net::TcpStream::connect(host_port) parity: resolve every address
+    // of "host:port" and try them in order until one connects (no local bind,
+    // close-on-exec). timeout_ms > 0 bounds the whole attempt like
+    // `timeout(ms, TcpStream::connect(..))`, except name resolution itself,
+    // which blocks in getaddrinfo. nullopt when nothing connects.
+    static std::optional<TcpFramedStream> connect_host(const std::string& host_port,
+                                                       uint64_t timeout_ms);
+
+    // Switch to raw mode (disable length-delimited framing). Like upstream's
+    // set_raw() this also drops the secretbox key: raw bytes are never sealed.
     void set_raw();
 
     // Whether a secretbox key is active.
@@ -66,7 +75,9 @@ public:
         return send_raw(std::vector<uint8_t>(bytes.begin(), bytes.end()));
     }
 
-    // Send raw bytes (length-delimited unless raw mode).
+    // Send raw bytes (length-delimited unless raw mode). An empty payload
+    // still goes out as an empty frame, as upstream: an all-default Message
+    // serializes to zero bytes, and the server's handshake waits for it.
     bool send_raw(const std::vector<uint8_t>& msg);
 
     // Send pre-constructed bytes (for already-encoded frames).
@@ -82,6 +93,13 @@ public:
     // for this call only and restores the previous value afterwards (including
     // 0 = blocking). A frame cut short by the timeout stays buffered.
     std::optional<std::vector<uint8_t>> next_timeout(uint64_t timeout_ms);
+
+    // Non-blocking next() for poll() loops (no upstream counterpart: tokio's
+    // select! polls next() without blocking). Returns a frame when one is
+    // complete in the buffer or completes from what the socket holds right
+    // now; nullopt otherwise (peer_closed() then tells EOF/error from "not
+    // yet"). Throws like next() on a decryption or framing error.
+    std::optional<std::vector<uint8_t>> try_next();
 
     // True once the peer closed the stream or the socket failed. Upstream's
     // `stream.next()` yields None there ("Reset by the peer"), while a
@@ -106,6 +124,10 @@ public:
     // Returns nullopt if the address cannot be determined.
     std::optional<ResolvedAddr> local_addr() const;
 
+    // Remote address of the socket (getpeername; the `addr` half of
+    // `listener.accept()`'s (stream, addr)).
+    std::optional<ResolvedAddr> peer_addr() const;
+
 private:
     // Encryption state: (key, outbound_seq, inbound_seq), seqs start at 0.
     // Key is 32 bytes (secretbox::KEYBYTES); nonces come from
@@ -119,9 +141,10 @@ private:
     std::vector<uint8_t> rbuf_;
     bool peer_closed_ = false;
 
-    // Internal send/receive helpers.
+    // Internal send/receive helpers. recv_flags is 0 (blocking, bounded by
+    // SO_RCVTIMEO) or MSG_DONTWAIT (try_next).
     bool send_all(const uint8_t* data, size_t len);
-    std::optional<std::vector<uint8_t>> recv_frame();
+    std::optional<std::vector<uint8_t>> recv_frame(int recv_flags = 0);
 
     // Per-call receive timeout (SO_RCVTIMEO) save/restore for next_timeout().
     void set_timeout_ms_for_call(int timeout_ms);

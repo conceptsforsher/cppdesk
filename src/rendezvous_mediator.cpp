@@ -2,6 +2,7 @@
 #include <rustdesk/rendezvous_mediator.hpp>
 
 #include <rustdesk/common.hpp>
+#include <rustdesk/server.hpp>
 
 #include <hbb_common/addr_mangle.hpp>
 
@@ -113,6 +114,41 @@ std::string uuid_v4() {
                   static_cast<uint32_t>(((lo >> 60) & 0x3) | 0x8) << 12 | (lo >> 48 & 0x0FFF),
                   static_cast<unsigned long long>(lo & 0xFFFFFFFFFFFFULL));
     return std::string(buf);
+}
+
+void RendezvousMediator::start_all() {
+    check_zombie();
+    const ServerPtr server = Server::create();
+    ServerHooks hooks;
+    hooks.accept_connection = [server](TcpFramedStream socket, ResolvedAddr peer_addr,
+                                       bool secure) {
+        rustdesk::accept_connection(server, std::move(socket), peer_addr, secure);
+    };
+    hooks.create_relay_connection = [server](std::string relay_server, std::string uuid,
+                                             ResolvedAddr peer_addr, bool secure) {
+        rustdesk::create_relay_connection(server, relay_server, uuid, peer_addr, secure);
+    };
+    while (true) {
+        hbb_common::reset_online();
+        if (hbb_common::get_option("stop-service").empty()) {
+            std::vector<std::thread> futs;
+            const std::vector<std::string> servers = hbb_common::get_rendezvous_servers();
+            for (const std::string& host : servers) {
+                futs.emplace_back([host, servers, hooks] {
+                    try {
+                        RendezvousMediator rz(host, hbb_common::get_any_listen_addr(), servers);
+                        rz.start(hooks);
+                    } catch (const std::exception&) {
+                        // allow_err!(Self::start(server, host, servers).await)
+                    }
+                });
+            }
+            for (std::thread& t : futs) {
+                t.join();  // join_all(futs).await
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
 }
 
 RendezvousMediator::RendezvousMediator(std::string host, ResolvedAddr addr,

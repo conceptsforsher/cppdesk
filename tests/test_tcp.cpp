@@ -6,11 +6,17 @@
 // a frame cut by a timeout must complete later, next_timeout() must restore
 // a blocking socket to blocking, connect/accept timeouts must not leak into
 // the stream, and EOF must be distinguishable from a timeout.
+//
+// Step 15 adds: try_next() (the poll-loop read), empty frames on the wire,
+// set_raw() dropping the secretbox key, peer_addr(), connect_host() and
+// close-on-exec sockets.
 
 #include <hbb_common/bytes_codec.hpp>
+#include <hbb_common/crypto.hpp>
 #include <hbb_common/tcp.hpp>
 #include <hbb_common/util.hpp>
 
+#include <fcntl.h>
 #include <sys/socket.h>
 
 #include <atomic>
@@ -291,6 +297,192 @@ void test_socket_addr_parse() {
     CHECK(!parse_socket_addr(""));
 }
 
+void test_try_next() {
+    auto c = make_conn();
+    CHECK(c.has_value());
+    if (!c) return;
+    // Nothing sent: no frame, not closed, and no blocking.
+    const auto t0 = std::chrono::steady_clock::now();
+    CHECK(!c->server.try_next().has_value());
+    CHECK(!c->server.peer_closed());
+    CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(500));
+    // Two frames in one write: both come out of successive try_next() calls,
+    // the second from the buffer alone.
+    BytesCodec codec;
+    Bytes wire;
+    const Bytes a = {1, 2};
+    const Bytes b = pattern(3000);
+    codec.encode(a, wire);
+    codec.encode(b, wire);
+    CHECK(c->client.send_bytes(wire));
+    std::optional<Bytes> f1;
+    for (int i = 0; i < 200 && !f1; ++i) {
+        f1 = c->server.try_next();
+        if (!f1) sleep_ms(5);
+    }
+    CHECK(f1 && *f1 == a);
+    const auto f2 = c->server.try_next();
+    CHECK(f2 && *f2 == b);
+    CHECK(!c->server.try_next().has_value());
+    // A partial frame stays buffered until the rest arrives.
+    Bytes wire2;
+    const Bytes big = pattern(20000);
+    codec.encode(big, wire2);
+    CHECK(c->client.send_bytes(Bytes(wire2.begin(), wire2.begin() + 100)));
+    sleep_ms(50);
+    CHECK(!c->server.try_next().has_value());
+    CHECK(c->client.send_bytes(Bytes(wire2.begin() + 100, wire2.end())));
+    std::optional<Bytes> f3;
+    for (int i = 0; i < 200 && !f3; ++i) {
+        f3 = c->server.try_next();
+        if (!f3) sleep_ms(5);
+    }
+    CHECK(f3 && *f3 == big);
+    // EOF: nullopt with peer_closed().
+    { TcpFramedStream gone = std::move(c->client); }
+    bool closed = false;
+    for (int i = 0; i < 200 && !closed; ++i) {
+        CHECK(!c->server.try_next().has_value());
+        closed = c->server.peer_closed();
+        if (!closed) sleep_ms(5);
+    }
+    CHECK(closed);
+}
+
+void test_empty_frame() {
+    // An all-default Message serializes to zero bytes; upstream still sends
+    // it as a frame (the server handshake waits for exactly that).
+    auto c = make_conn();
+    CHECK(c.has_value());
+    if (!c) return;
+    CHECK(c->client.send_raw({}));
+    const auto got = c->server.next_timeout(2000);
+    CHECK(got.has_value() && got->empty());
+    // Encrypted: an empty payload seals to the 16-byte MAC and opens empty.
+    const auto key = hbb_common::crypto::secretbox_gen_key();
+    c->client.set_key(key);
+    c->server.set_key(key);
+    CHECK(c->client.send_raw({}));
+    const auto sealed = c->server.next_timeout(2000);
+    CHECK(sealed.has_value() && sealed->empty());
+}
+
+void test_set_raw_drops_key() {
+    auto c = make_conn();
+    CHECK(c.has_value());
+    if (!c) return;
+    const auto key = hbb_common::crypto::secretbox_gen_key();
+    c->client.set_key(key);
+    c->server.set_key(key);
+    CHECK(c->client.is_secured() && c->server.is_secured());
+    c->client.set_raw();
+    c->server.set_raw();
+    CHECK(!c->client.is_secured());  // `self.1 = None`
+    CHECK(!c->server.is_secured());
+    const Bytes payload = {'r', 'a', 'w'};
+    CHECK(c->client.send_raw(payload));  // raw codec, no seal: bytes as-is
+    const auto got = c->server.next_timeout(2000);
+    CHECK(got && *got == payload);
+}
+
+void test_peer_addr() {
+    auto c = make_conn();
+    CHECK(c.has_value());
+    if (!c) return;
+    const auto client_local = c->client.local_addr();
+    const auto server_peer = c->server.peer_addr();
+    CHECK(client_local && server_peer);
+    CHECK(client_local && server_peer && server_peer->ip == "127.0.0.1" &&
+          server_peer->port == client_local->port);
+    const auto client_peer = c->client.peer_addr();
+    const auto server_local = c->server.local_addr();
+    CHECK(client_peer && server_local && client_peer->port == server_local->port);
+}
+
+void test_connect_host() {
+    auto listener = TcpListener::bind(to_socket_addr("127.0.0.1:0"), true);
+    CHECK(listener.has_value());
+    if (!listener) return;
+    const auto addr = listener->local_addr();
+    CHECK(addr.has_value());
+    if (!addr) return;
+    // Literal SocketAddr and "host:port" by name both connect.
+    for (const std::string target :
+         {"127.0.0.1:" + std::to_string(addr->port), "localhost:" + std::to_string(addr->port)}) {
+        std::optional<TcpFramedStream> accepted;
+        std::thread acceptor([&] { accepted = listener->accept(3000); });
+        auto s = TcpFramedStream::connect_host(target, 3000);
+        acceptor.join();
+        if (target.rfind("localhost", 0) == 0 && !s) {
+            // localhost may resolve to ::1 only on some hosts; the listener
+            // is v4. Not a failure of the resolver loop.
+            continue;
+        }
+        CHECK(s.has_value());
+        CHECK(accepted.has_value());
+        if (s && accepted) {
+            const Bytes msg = {7};
+            CHECK(s->send_raw(msg));
+            const auto got = accepted->next_timeout(2000);
+            CHECK(got && *got == msg);
+        }
+    }
+    // Invalid port values and refused connects come back empty.
+    CHECK(!TcpFramedStream::connect_host("127.0.0.1", 500).has_value());
+    CHECK(!TcpFramedStream::connect_host("localhost:99999", 500).has_value());
+    CHECK(!TcpFramedStream::connect_host("localhost:x", 500).has_value());
+    auto closed_port = TcpListener::bind(to_socket_addr("127.0.0.1:0"), true);
+    CHECK(closed_port.has_value());
+    if (closed_port) {
+        const auto cp = closed_port->local_addr();
+        closed_port.reset();  // nobody listens there now
+        if (cp) {
+            CHECK(!TcpFramedStream::connect_host("127.0.0.1:" + std::to_string(cp->port), 1000)
+                       .has_value());
+        }
+    }
+}
+
+bool is_cloexec(int fd) {
+    const int flags = ::fcntl(fd, F_GETFD);
+    return flags >= 0 && (flags & FD_CLOEXEC) != 0;
+}
+
+void test_cloexec() {
+    // Rust's std/socket2 open every socket close-on-exec; a spawned child
+    // (the connection manager) must not inherit live connections.
+    auto c = make_conn();
+    CHECK(c.has_value());
+    if (!c) return;
+    CHECK(is_cloexec(c->client.fd()));
+    CHECK(is_cloexec(c->server.fd()));
+    auto listener = TcpListener::bind(to_socket_addr("127.0.0.1:0"), true);
+    CHECK(listener && is_cloexec(listener->fd()));
+    const auto addr = listener ? listener->local_addr() : std::nullopt;
+    if (addr) {
+        auto s = TcpFramedStream::connect_host("127.0.0.1:" + std::to_string(addr->port), 2000);
+        auto accepted = listener->accept(2000);
+        CHECK(s && is_cloexec(s->fd()));
+        CHECK(accepted && is_cloexec(accepted->fd()));
+    }
+}
+
+void test_parse_ip_addr() {
+    using hbb_common::parse_ip_addr;
+    const auto v4 = parse_ip_addr("10.0.0.1");
+    CHECK(v4 && v4->family == AF_INET && v4->ip == "10.0.0.1" && v4->port == 0);
+    const auto v6 = parse_ip_addr("0:0:0:0:0:0:0:1");
+    CHECK(v6 && v6->family == AF_INET6 && v6->ip == "::1");
+    CHECK(parse_ip_addr("::ffff:1.2.3.4").has_value());
+    CHECK(!parse_ip_addr("10.0.0.1:80"));  // a SocketAddr, not an IpAddr
+    CHECK(!parse_ip_addr("[::1]"));
+    CHECK(!parse_ip_addr("01.2.3.4"));  // leading zeros are rejected
+    CHECK(!parse_ip_addr(" 1.2.3.4"));
+    CHECK(!parse_ip_addr("localhost"));
+    CHECK(!parse_ip_addr(""));
+    CHECK(!parse_ip_addr(std::string("1.2.3.4\0", 8)));
+}
+
 }  // namespace
 
 int main() {
@@ -307,6 +499,13 @@ int main() {
     test_move_keeps_buffer();
     test_socket_addr_display();
     test_socket_addr_parse();
+    test_try_next();
+    test_empty_frame();
+    test_set_raw_drops_key();
+    test_peer_addr();
+    test_connect_host();
+    test_cloexec();
+    test_parse_ip_addr();
     if (g_failures == 0) {
         std::puts("test_tcp: all tests passed");
     }

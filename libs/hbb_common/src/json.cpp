@@ -579,4 +579,68 @@ bool is_valid_utf8(std::string_view bytes) {
     return true;
 }
 
+std::string from_utf8_lossy(std::string_view bytes) {
+    // core::str::lossy::Utf8Chunks: walk one sequence at a time; on error the
+    // invalid chunk is the lead byte plus the continuation bytes accepted so
+    // far, and it becomes a single U+FFFD.
+    const size_t n = bytes.size();
+    auto at = [&](size_t k) -> unsigned {
+        return k < n ? static_cast<unsigned char>(bytes[k]) : 0u;  // safe_get: 0 past the end
+    };
+    auto cont = [](unsigned b) { return (b & 0xC0) == 0x80; };
+    std::string out;
+    out.reserve(n);
+    size_t valid_start = 0;
+    size_t i = 0;
+    while (i < n) {
+        const size_t start = i;
+        const unsigned byte = at(i++);
+        bool ok = true;
+        if (byte >= 0x80) {
+            if (byte >= 0xC2 && byte <= 0xDF) {
+                if (cont(at(i))) {
+                    ++i;
+                } else {
+                    ok = false;
+                }
+            } else if (byte >= 0xE0 && byte <= 0xEF) {
+                const unsigned c1 = at(i);
+                const bool lead = byte == 0xE0   ? (c1 >= 0xA0 && c1 <= 0xBF)
+                                  : byte == 0xED ? (c1 >= 0x80 && c1 <= 0x9F)
+                                                 : (c1 >= 0x80 && c1 <= 0xBF);
+                if (!lead) {
+                    ok = false;
+                } else if (!cont(at(++i))) {
+                    ok = false;
+                } else {
+                    ++i;
+                }
+            } else if (byte >= 0xF0 && byte <= 0xF4) {
+                const unsigned c1 = at(i);
+                const bool lead = byte == 0xF0   ? (c1 >= 0x90 && c1 <= 0xBF)
+                                  : byte == 0xF4 ? (c1 >= 0x80 && c1 <= 0x8F)
+                                                 : (c1 >= 0x80 && c1 <= 0xBF);
+                if (!lead) {
+                    ok = false;
+                } else if (!cont(at(++i))) {
+                    ok = false;
+                } else if (!cont(at(++i))) {
+                    ok = false;
+                } else {
+                    ++i;
+                }
+            } else {
+                ok = false;  // C0/C1, F5..FF, stray continuation byte
+            }
+        }
+        if (!ok) {
+            out.append(bytes.substr(valid_start, start - valid_start));
+            out.append("\xEF\xBF\xBD");
+            valid_start = i;
+        }
+    }
+    out.append(bytes.substr(valid_start));
+    return out;
+}
+
 }  // namespace hbb_common::json

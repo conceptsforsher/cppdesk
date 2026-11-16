@@ -9,11 +9,11 @@
 // workaround is dropped (no tokio timer here).
 //
 // Server seam: upstream threads `ServerPtr` through every handler for the
-// final `accept_connection` / `create_relay_connection` handoff (both live in
-// server.rs — the NEXT part). Here that handoff is a `ServerHooks` struct of
-// `std::function`s that the server step will wire to the real server; until
-// then the hooks are empty and reaching one throws (loud, not silent).
-// `start_all` (spawns the server itself) is deferred to the server step.
+// final `accept_connection` / `create_relay_connection` handoff (both in
+// server.rs). Here that handoff is a `ServerHooks` struct of
+// `std::function`s; start_all() (step 15) creates the Server and wires the
+// hooks to those two functions over it. Hooks left empty (tests driving a
+// mediator directly) throw when reached, loud rather than silent.
 
 #pragma once
 
@@ -52,6 +52,12 @@ class RendezvousMediator {
 public:
     RendezvousMediator(std::string host, hbb_common::ResolvedAddr addr,
                        std::vector<std::string> rendezvous_servers);
+
+    // `pub async fn start_all()`: starts the zombie reaper, creates the
+    // Server, then forever: reset online state and, unless "stop-service" is
+    // set, run one mediator per rendezvous server (threads, joined like
+    // join_all) until the server list changes; sleep 1 s; repeat.
+    static void start_all();
 
     // host_prefix() helper factored for tests: first DNS label, or the whole
     // host when that label parses as i32 (upstream inline logic, unchanged).

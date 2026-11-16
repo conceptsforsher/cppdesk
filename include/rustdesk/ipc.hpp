@@ -241,6 +241,14 @@ public:
     // std::runtime_error.
     std::optional<Data> next();
 
+    // Poll-loop form of next() (no upstream counterpart: select! polls next()
+    // without blocking). nullopt when no whole frame is buffered or readable
+    // right now; otherwise next()'s result, with the same throws (EOF is
+    // "reset by the peer").
+    std::optional<std::optional<Data>> try_next();
+    // The socket, for poll().
+    int fd() const { return conn_.fd(); }
+
     // Send one raw frame of arbitrary bytes. No upstream counterpart; tests use
     // it to inject undecodable frames.
     void send_raw_frame(const std::vector<uint8_t>& bytes);

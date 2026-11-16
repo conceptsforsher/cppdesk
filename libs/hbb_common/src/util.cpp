@@ -2,6 +2,7 @@
 #include <hbb_common/util.hpp>
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -163,8 +164,37 @@ std::optional<ResolvedAddr> parse_socket_addr(const std::string& s) {
     return ResolvedAddr{AF_INET, canon, *port};
 }
 
+std::optional<ResolvedAddr> parse_ip_addr(const std::string& s) {
+    char canon[INET6_ADDRSTRLEN] = {};
+    struct in_addr a4 {};
+    if (::inet_pton(AF_INET, s.c_str(), &a4) == 1 && s.size() == std::strlen(s.c_str())) {
+        if (!::inet_ntop(AF_INET, &a4, canon, sizeof canon)) {
+            return std::nullopt;
+        }
+        return ResolvedAddr{AF_INET, canon, 0};
+    }
+    struct in6_addr a6 {};
+    if (::inet_pton(AF_INET6, s.c_str(), &a6) == 1 && s.size() == std::strlen(s.c_str())) {
+        if (!::inet_ntop(AF_INET6, &a6, canon, sizeof canon)) {
+            return std::nullopt;
+        }
+        return ResolvedAddr{AF_INET6, canon, 0};
+    }
+    return std::nullopt;
+}
+
 int new_socket(const ResolvedAddr& addr, bool tcp, bool reuse) {
+    // socket2 (like Rust's std) creates every socket close-on-exec; without
+    // it a spawned child (the connection manager) would hold live
+    // connections open after the server closed them.
+#if defined(SOCK_CLOEXEC)
+    const int fd = ::socket(addr.family, (tcp ? SOCK_STREAM : SOCK_DGRAM) | SOCK_CLOEXEC, 0);
+#else
     const int fd = ::socket(addr.family, tcp ? SOCK_STREAM : SOCK_DGRAM, 0);
+    if (fd >= 0) {
+        ::fcntl(fd, F_SETFD, FD_CLOEXEC);
+    }
+#endif
     if (fd < 0) {
         throw std::system_error(errno, std::generic_category(), "socket");
     }

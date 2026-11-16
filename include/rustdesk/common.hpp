@@ -6,7 +6,8 @@
 // streams instead of #[tokio::main]).
 //
 // Deferred with their owner steps (declared nowhere until then):
-// - check_clipboard/update_clipboard → clipboard step (needs ClipboardContext)
+// - check_clipboard → clipboard step (needs ClipboardContext)
+// - update_clipboard(.., Some(old)) → client UI step (ui/remote.rs)
 // - resample_channels → audio step (needs dasp resampling)
 // - cli.rs Session/start_one_port_forward → client step (needs client::Interface)
 // - main.rs argv dispatch → entry step (needs server/ui/platform)
@@ -47,10 +48,21 @@ int64_t get_time();  // ms since UNIX epoch
 std::string check_port(const std::string& host, int32_t port);
 std::string test_if_valid_server(std::string host);
 int64_t get_version_number(const std::string& v);
-std::string username();  // whoami parity (getlogin/getenv fallback)
-// run_me parity: spawn current exe detached; throws std::system_error on failure
-// (upstream returns io::Result<Child>; callers here detach immediately).
-void run_me(const std::vector<std::string>& args);
+// whoami::username() with trailing NULs trimmed ("fix bug of whoami"): the
+// effective user's passwd name, so `sudo cppdesk` is "root".
+std::string username();
+// run_me parity: `Command::new(current_exe()?).args(args).spawn()`. Returns
+// the child's pid (the Child handle: the caller reaps it, e.g. through
+// CHILD_PROCESS); throws std::system_error (io::Error) on failure.
+intptr_t run_me(const std::vector<std::string>& args);
+
+// update_clipboard(clipboard, None): the server side, CONTENT as `old`.
+// Decompresses when flagged and requires UTF-8 (String::from_utf8), then
+// opens a ClipboardContext. Clipboard seam: copypasta (clipboard step)
+// arrives later; until then ClipboardContext::new() fails like on a host
+// without a display, so the content is dropped and CONTENT is left alone
+// (upstream logs "Failed to create clipboard context").
+void update_clipboard(const hbb::Clipboard& clipboard);
 
 // Rendezvous / NAT / update tasks (each spawns a detached worker thread).
 // hbb_common timeouts in ms flow straight through.

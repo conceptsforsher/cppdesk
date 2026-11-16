@@ -28,73 +28,34 @@ cppdesk_test(test_tcp)
 cppdesk_test(test_udp)
 # protoc-generated structs: wire round-trips (upstream has no proto tests).
 cppdesk_test(test_protos)
+# Tests of app modules link the rustdesk library (src/lib.rs parity, step
+# 15) rather than recompiling app sources per test.
+function(cppdesk_app_test name)
+    cppdesk_test(${name})
+    target_link_libraries(${name} PRIVATE rustdesk)
+endfunction()
+
 # src/common.rs pure helpers (key predicates, version/port strings).
-# Needs the app include dir (rustdesk/common.hpp lives at the root).
-cppdesk_test(test_common)
-target_include_directories(test_common PRIVATE ../include)
-# The app object itself (src/common.cpp) is compiled into the test so the
-# helpers are exercised, not stubbed.
-target_sources(test_common PRIVATE ../src/common.cpp ../src/ipc.cpp)
-target_link_libraries(test_common PRIVATE parity_tokio_ipc)
-target_include_directories(
-    test_common
-    PRIVATE
-        ${CMAKE_BINARY_DIR}/generated
-)
+cppdesk_app_test(test_common)
 # fs.rs file-transfer jobs (read_dir, recursive enum, block round-trip).
 cppdesk_test(test_fs)
 # crypto seam round-trips (upstream has no crypto unit tests).
 cppdesk_test(test_crypto)
 # server foundation: service framework, ConnInner queue, cursor cache,
-# Server registry, zombie reaper. Compiles the server objects it exercises.
-cppdesk_test(test_server)
-target_include_directories(test_server PRIVATE ../include)
-target_sources(
-    test_server
-    PRIVATE
-        ../src/connection.cpp
-        ../src/server.cpp
-        ../src/audio_service.cpp
-        ../src/video_service.cpp
-        ../src/clipboard_service.cpp
-        ../src/input_service.cpp
-)
-target_include_directories(
-    test_server
-    PRIVATE
-        ${CMAKE_BINARY_DIR}/generated
-)
+# Server registry, zombie reaper; video_service state and the input_service
+# predicates (step 15).
+cppdesk_app_test(test_server)
 # client.rs login config + handshake helpers (hermetic HOME redirect +
-# loopback TCP). Compiles the app objects it exercises.
-cppdesk_test(test_client)
-target_include_directories(test_client PRIVATE ../include)
-target_sources(test_client PRIVATE ../src/client.cpp ../src/common.cpp ../src/key_map.cpp
-                                   ../src/rendezvous_mediator.cpp ../src/ipc.cpp)
-target_link_libraries(test_client PRIVATE parity_tokio_ipc)
-target_include_directories(
-    test_client
-    PRIVATE
-        ${CMAKE_BINARY_DIR}/generated
-)
-find_path(TEST_OPENSSL_INCLUDE_DIR NAMES openssl/sha.h)
-find_library(TEST_CRYPTO_LIBRARY NAMES crypto)
-target_include_directories(test_client PRIVATE ${TEST_OPENSSL_INCLUDE_DIR})
-target_link_libraries(test_client PRIVATE ${TEST_CRYPTO_LIBRARY} ${PROTOBUF_LIBRARY})
-# rendezvous_mediator.rs helpers (prefix, uuid, wire shapes; loopback
-# integration deferred to crypto step). Needs app + generated includes.
-cppdesk_test(test_mediator)
-target_include_directories(test_mediator PRIVATE ../include)
-target_sources(test_mediator PRIVATE ../src/rendezvous_mediator.cpp ../src/common.cpp
-                                     ../src/ipc.cpp)
-target_link_libraries(test_mediator PRIVATE parity_tokio_ipc)
-target_include_directories(
-    test_mediator
-    PRIVATE
-        ${CMAKE_BINARY_DIR}/generated
-)
+# loopback TCP).
+cppdesk_app_test(test_client)
+# rendezvous_mediator.rs helpers (prefix, uuid, wire shapes).
+cppdesk_app_test(test_mediator)
 # serde_json stand-in (hbb_common/json.hpp): serde_json-exact output, strict
 # parsing, UTF-8 validation (upstream has no JSON tests; ipc.rs relies on it).
 cppdesk_test(test_json)
+# tokio::sync::mpsc stand-in (hbb_common/mpsc.hpp): unbounded channel drop
+# semantics and the wake descriptor of the poll() loops (step 15).
+cppdesk_test(test_mpsc)
 # libs/parity-tokio-ipc: lib.rs smoke_test parity (echo over a Unix socket,
 # two clients) + the vendored unix.rs quirks (chmod-before-bind, no unlink).
 cppdesk_test(test_parity_tokio_ipc)
@@ -104,7 +65,13 @@ target_link_libraries(test_parity_tokio_ipc PRIVATE parity_tokio_ipc)
 # check_pid/write_pid, and the client helpers against a live daemon.
 # Hermetic: HOME/XDG_CONFIG_HOME point at a temp dir; skips the postfix ""
 # cases when a live IPC daemon already owns /tmp/RustDesk/ipc.
-cppdesk_test(test_ipc)
-target_include_directories(test_ipc PRIVATE ../include ${CMAKE_BINARY_DIR}/generated)
-target_sources(test_ipc PRIVATE ../src/ipc.cpp ../src/common.cpp)
-target_link_libraries(test_ipc PRIVATE parity_tokio_ipc)
+cppdesk_app_test(test_ipc)
+# std::process / whoami stand-ins and platform/linux.rs part 1: the seat0
+# session queries run against a fake `loginctl` first on PATH (hermetic).
+cppdesk_app_test(test_platform)
+# server.rs + server/connection.rs: a real client (Client::secure_connection,
+# LoginConfigHandler) against accept_connection / create_relay_connection over
+# loopback, a fake connection manager on the "_cm" ipc socket (in-process,
+# and as a re-exec'd `--cm` child for start_ipc's spawn path), port
+# forwarding to a local echo server, and the login-failure limits.
+cppdesk_app_test(test_connection)

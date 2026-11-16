@@ -193,6 +193,28 @@ void test_utf8() {
 
 }  // namespace
 
+void test_from_utf8_lossy() {
+    using hbb_common::json::from_utf8_lossy;
+    const std::string r = "\xef\xbf\xbd";  // U+FFFD
+    CHECK(from_utf8_lossy("") == "");
+    CHECK(from_utf8_lossy("plain") == "plain");
+    CHECK(from_utf8_lossy("\xc3\xa9\xf0\x9f\x98\x80") == "\xc3\xa9\xf0\x9f\x98\x80");
+    CHECK(from_utf8_lossy(std::string("a\0b", 3)) == std::string("a\0b", 3));
+    CHECK(from_utf8_lossy("\xff") == r);
+    CHECK(from_utf8_lossy("a\x80" "b") == "a" + r + "b");
+    // A truncated sequence is one chunk: lead + accepted continuations.
+    CHECK(from_utf8_lossy("\xc3") == r);
+    CHECK(from_utf8_lossy("\xe2\x82") == r);
+    CHECK(from_utf8_lossy("\xe2\x82x") == r + "x");
+    CHECK(from_utf8_lossy("\xf0\x9f\x98") == r);
+    // std's documented example.
+    CHECK(from_utf8_lossy("Hello \xF0\x90\x80World") == "Hello " + r + "World");
+    // A bad second byte ends the chunk at the lead; the rest are strays.
+    CHECK(from_utf8_lossy("\xed\xa0\x80") == r + r + r);  // surrogate
+    CHECK(from_utf8_lossy("\xc0\x80") == r + r);           // overlong
+    CHECK(from_utf8_lossy("\xf4\x90\x80\x80") == r + r + r + r);  // > U+10FFFF
+}
+
 int main() {
     test_dump_shapes();
     test_dump_escapes();
@@ -203,6 +225,7 @@ int main() {
     test_recursion_limit();
     test_equality();
     test_utf8();
+    test_from_utf8_lossy();
     if (g_failures == 0) {
         std::puts("test_json: all tests passed");
     }

@@ -1,19 +1,27 @@
 // test_server.cpp — tests for the server foundation (service framework,
-// ConnInner queue, cursor cache, Server registry, zombie reaper).
+// ConnInner queue, cursor cache, Server registry, zombie reaper), plus the
+// step-15 additions: the queue's receiver-drop semantics and wake pipe, the
+// video_service state (latency/quality maps, display bookkeeping behind the
+// scrap seam) and the input_service predicates.
 // Hermetic: no network/files; the reaper test uses fork+_exit only.
 
 #include <rustdesk/audio_service.hpp>
 #include <rustdesk/clipboard_service.hpp>
+#include <rustdesk/common.hpp>
 #include <rustdesk/connection.hpp>
 #include <rustdesk/input_service.hpp>
 #include <rustdesk/server.hpp>
 #include <rustdesk/service.hpp>
 #include <rustdesk/video_service.hpp>
 
+#include <poll.h>
+
+#include <cstdint>
 #include <cstdio>
 
 #include <algorithm>
 #include <chrono>
+#include <string>
 #include <thread>
 
 #if defined(__unix__) || defined(__APPLE__)
@@ -244,6 +252,166 @@ void test_zombie_reaper() {
 #endif
 }
 
+bool fd_readable(int fd) {
+    struct pollfd p {
+        fd, POLLIN, 0
+    };
+    return ::poll(&p, 1, 0) > 0 && (p.revents & POLLIN);
+}
+
+void test_queue_receiver_side() {
+    // try_recv keeps the send Instant (the loop measures latency from it).
+    rustdesk::ConnQueue q;
+    const auto before = std::chrono::steady_clock::now();
+    auto m1 = make_msg();
+    q.send(m1);
+    // The wake pipe made after the send still reports the queued item.
+    const int fd = q.wake_fd();
+    CHECK(fd_readable(fd));
+    q.clear_wake();
+    CHECK(!fd_readable(fd));
+    q.send(make_msg());
+    CHECK(fd_readable(fd));
+    const auto item = q.try_recv();
+    CHECK(item && item->message.get() == m1.get());
+    CHECK(item && item->instant >= before);
+    CHECK(q.try_recv().has_value());
+    CHECK(!q.try_recv().has_value());
+
+    // close() is the receiver going away: queued items are dropped, and
+    // later sends (ConnInner::send included) are discarded, not buffered.
+    const ConnInner c = make_conn(9);
+    c.send(make_msg());
+    CHECK(c.tx->size() == 1);
+    c.tx->close();
+    CHECK(c.tx->size() == 0);
+    c.send(make_msg());
+    CHECK(c.tx->size() == 0);
+    CHECK(!c.tx->try_recv().has_value());
+}
+
+void test_video_service_state() {
+    namespace vs = rustdesk::video_service;
+    // Latency maps: <= 0 removes; get_latency is the max internal one.
+    CHECK(vs::get_latency() == 0);
+    vs::update_internal_latency(1001, 50);
+    vs::update_internal_latency(1002, 70);
+    CHECK(vs::get_latency() == 70);
+    vs::update_internal_latency(1002, 0);
+    CHECK(vs::get_latency() == 50);
+    vs::update_internal_latency(1001, -5);
+    CHECK(vs::get_latency() == 0);
+    vs::update_test_latency(1001, 30);  // separate map; no getter upstream
+    vs::update_test_latency(1001, 0);
+
+    // convert_quality: presets map to (bitrate << 8 | quantizer).
+    CHECK(vs::convert_quality(hbb::Balanced) == (66 << 8 | 12));
+    CHECK(vs::convert_quality(hbb::Low) == (50 << 8 | 18));
+    CHECK(vs::convert_quality(hbb::Best) == (100 << 8 | 12));
+    CHECK(vs::convert_quality(hbb::ImageQualityNotSet) == 0);  // bitrate 0
+    // Custom: bitrate * 2, (100 - quantizer) * 36 / 100.
+    CHECK(vs::convert_quality(50 << 8 | 50) == (100 << 8 | 18));
+    // Quantizer above 100 goes negative and swallows the bitrate bits
+    // (i32 `|` with a negative operand), verbatim.
+    CHECK(vs::convert_quality(10 << 8 | 200) == -36);
+
+    // Image quality: min over connections, Balanced when none.
+    const int32_t balanced = vs::convert_quality(hbb::Balanced);
+    CHECK(vs::get_image_quality() == balanced);
+    vs::update_image_quality(2001, hbb::Best);
+    CHECK(vs::get_image_quality() == (100 << 8 | 12));
+    vs::update_image_quality(2002, hbb::Low);
+    CHECK(vs::get_image_quality() == (50 << 8 | 18));
+    vs::update_image_quality(2002, std::nullopt);
+    CHECK(vs::get_image_quality() == (100 << 8 | 12));
+    vs::update_image_quality(2001, hbb::ImageQualityNotSet);  // converts to 0: removed
+    CHECK(vs::get_image_quality() == balanced);
+
+    // refresh() raises SWITCH for the capture loop.
+    CHECK(!vs::switch_pending());
+    vs::refresh();
+    CHECK(vs::switch_pending());
+
+    // scrap seam: Display::all() fails like a host without an X server.
+    CHECK(vs::current_display() == SIZE_MAX);
+    std::string err;
+    try {
+        vs::get_displays();
+    } catch (const std::exception& e) {
+        err = e.what();
+    }
+    CHECK(err == "connection refused");
+    vs::switch_display(0);  // nothing to switch to
+    vs::switch_to_primary();
+    CHECK(vs::current_display() == SIZE_MAX);
+}
+
+void test_input_service() {
+    namespace is = rustdesk::input_service;
+    hbb::MouseEvent me;
+    me.set_mask(1 << 3 | 2);  // left button, up
+    CHECK(is::is_left_up(me));
+    me.set_mask(1 << 3 | 1);  // left button, down
+    CHECK(!is::is_left_up(me));
+    me.set_mask(2 << 3 | 2);  // right button, up
+    CHECK(!is::is_left_up(me));
+
+    hbb::KeyEvent ke;
+    ke.set_control_key(hbb::Return);
+    CHECK(is::is_enter(ke));
+    ke.set_control_key(hbb::NumpadEnter);
+    CHECK(is::is_enter(ke));
+    ke.set_control_key(hbb::Space);
+    CHECK(!is::is_enter(ke));
+    ke.set_chr(13);
+    CHECK(!is::is_enter(ke));
+
+    // LATEST_INPUT: only mouse moves (type 0) record (conn, time).
+    const int64_t t0 = rustdesk::get_time();
+    hbb::MouseEvent move;
+    move.set_mask(0);
+    move.set_x(10);
+    move.set_y(20);
+    is::handle_mouse(move, 77);
+    const auto [conn, time] = is::latest_input();
+    CHECK(conn == 77);
+    CHECK(time >= t0 && time <= rustdesk::get_time());
+    hbb::MouseEvent click;
+    click.set_mask(1 << 3 | 1);
+    click.add_modifiers(hbb::Shift);
+    is::handle_mouse(click, 78);
+    CHECK(is::latest_input().first == 77);
+    hbb::MouseEvent wheel;
+    wheel.set_mask(3);
+    wheel.set_x(-2);
+    wheel.set_y(3);
+    is::handle_mouse(wheel, 79);
+
+    // handle_key over every union arm (null enigo: nothing is injected).
+    hbb::KeyEvent k;
+    k.set_down(true);
+    k.add_modifiers(hbb::Control);
+    k.add_modifiers(hbb::CapsLock);
+    k.set_chr('a');
+    is::handle_key(k);
+    k.set_unicode(0x1F600);
+    is::handle_key(k);
+    k.set_unicode(0xD800);  // not a char: skipped
+    is::handle_key(k);
+    k.set_seq("abc");
+    is::handle_key(k);
+    k.set_control_key(hbb::F5);
+    is::handle_key(k);
+    // CtrlAltDel sends SAS to the "_service" ipc on a thread (nobody listens
+    // here); LockScreen runs lock_screen() + switch_to_primary().
+    k.set_control_key(hbb::CtrlAltDel);
+    is::handle_key(k);
+    k.set_control_key(hbb::LockScreen);
+    is::handle_key(k);
+    // Let those detached threads finish before statics are torn down.
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+}
+
 }  // namespace
 
 int main() {
@@ -252,6 +420,9 @@ int main() {
     test_cursor_cache();
     test_server_registry();
     test_zombie_reaper();
+    test_queue_receiver_side();
+    test_video_service_state();
+    test_input_service();
     if (g_failures == 0) {
         std::puts("test_server: all tests passed");
     }

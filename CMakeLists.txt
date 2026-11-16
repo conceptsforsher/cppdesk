@@ -39,10 +39,6 @@ add_subdirectory(libs/hbb_common)
 # "libs/parity-tokio-ipc" }), the transport under src/ipc.rs. Step 14.
 add_subdirectory(libs/parity-tokio-ipc)
 
-# App crate parity (src/lib.rs module map): first-party app sources compile
-# into the cppdesk binary directly. Later steps add platform/ui here;
-# a librustdesk split happens only if link times demand it.
-#
 # OpenSSL libcrypto (sha2 crate parity for the login handshake hashes).
 # System package, offline-safe lookup like zstd/protobuf.
 find_path(OPENSSL_INCLUDE_DIR NAMES openssl/sha.h)
@@ -51,29 +47,52 @@ if(NOT OPENSSL_INCLUDE_DIR OR NOT CRYPTO_LIBRARY)
     message(FATAL_ERROR "libcrypto dev files not found (need openssl/sha.h + libcrypto)")
 endif()
 
-add_executable(cppdesk src/main.cpp src/common.cpp src/rendezvous_mediator.cpp src/client.cpp
-                       src/key_map.cpp src/connection.cpp src/server.cpp src/audio_service.cpp
-                       src/video_service.cpp src/clipboard_service.cpp src/input_service.cpp
-                       src/ipc.cpp)
+# App crate parity: Cargo.toml builds the crate as a library ([lib], module
+# map in src/lib.rs) plus the src/main.rs binary. Same split here: the
+# rustdesk static library holds every app module, cppdesk links it, and the
+# tests link it instead of recompiling app sources one by one (step 15).
+add_library(rustdesk STATIC
+    src/common.cpp
+    src/rendezvous_mediator.cpp
+    src/client.cpp
+    src/key_map.cpp
+    src/connection.cpp
+    src/server.cpp
+    src/audio_service.cpp
+    src/video_service.cpp
+    src/clipboard_service.cpp
+    src/input_service.cpp
+    src/ipc.cpp
+    # std::process / whoami stand-ins (process.hpp, whoami.hpp)
+    src/process.cpp
+    src/whoami.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # platform/mod.rs: `pub use linux::*`. macOS/Windows arrive with the
+    # platform step; until then other hosts fail to link (platform.hpp).
+    target_sources(rustdesk PRIVATE src/platform/linux.cpp)
+endif()
+if(WIN32)
+    # build.rs build_windows() parity: compile src/windows.cc into the crate.
+    target_sources(rustdesk PRIVATE src/platform/windows.cc)
+    # Upstream leaves WtsApi32 commented out — same here:
+    # target_link_libraries(rustdesk PRIVATE WtsApi32)
+endif()
 target_include_directories(
-    cppdesk
-    PRIVATE
+    rustdesk
+    PUBLIC
         "${CMAKE_CURRENT_BINARY_DIR}/generated"
         include
         # generated protobuf headers come from hbb_common's PUBLIC include
         # (build-time protos_gen, or the checked-in protos/gen fallback)
         ${OPENSSL_INCLUDE_DIR}
 )
-target_link_libraries(cppdesk PRIVATE hbb_common parity_tokio_ipc cppdesk_protobuf ${CRYPTO_LIBRARY})
+target_link_libraries(rustdesk PUBLIC hbb_common parity_tokio_ipc cppdesk_protobuf ${CRYPTO_LIBRARY})
 # NOTE: cppdesk_protobuf is defined above and shared with libs/hbb_common;
-# common.cpp calls libprotobuf directly.
+# the app calls libprotobuf directly.
 
-if(WIN32)
-    # build.rs build_windows() parity: compile src/windows.cc into the binary.
-    target_sources(cppdesk PRIVATE src/platform/windows.cc)
-    # Upstream leaves WtsApi32 commented out — same here:
-    # target_link_libraries(cppdesk PRIVATE WtsApi32)
-endif()
+add_executable(cppdesk src/main.cpp)
+target_link_libraries(cppdesk PRIVATE rustdesk)
 
 include(CTest)
 add_subdirectory(tests)

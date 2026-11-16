@@ -46,10 +46,15 @@ std::string to_string(const ResolvedAddr& addr);
 // comes back in canonical inet_ntop form. nullopt on any syntax error.
 std::optional<ResolvedAddr> parse_socket_addr(const std::string& s);
 
+// `str::parse::<IpAddr>()` parity: a bare v4 dotted quad or v6 text (no
+// brackets, port or zone). Port is 0; the ip comes back in canonical
+// inet_ntop form, so two parses compare equal exactly when the IpAddrs do.
+std::optional<ResolvedAddr> parse_ip_addr(const std::string& s);
+
 // `new_socket(addr, tcp, reuse)` parity: create + (optionally)
 // SO_REUSEADDR (+ SO_REUSEPORT on Linux, matching upstream's unix cfg) +
-// bind. Returns the fd; throws std::system_error on failure. The caller owns
-// the fd (an RAII socket wrapper arrives with the transport step).
+// bind. The socket is close-on-exec (socket2 parity). Returns the fd; throws
+// std::system_error on failure. The caller owns the fd.
 int new_socket(const ResolvedAddr& addr, bool tcp, bool reuse);
 
 // Pure string helper used by the updater path. Byte-wise port: upstream

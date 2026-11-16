@@ -1,9 +1,10 @@
-// main.cpp — cppdesk step 14 (part 11 of upstream d1013487 "source code").
+// main.cpp — cppdesk step 15 (part 12 of upstream d1013487 "source code").
 //
-// src/main.rs argv dispatch is deferred until connection/platform/ui land,
-// so the binary stays a step placeholder. It now links the IPC layer
-// (src/ipc.rs + libs/parity-tokio-ipc) alongside the server foundation,
-// client, mediator and hbb_common.
+// src/main.rs argv dispatch (--server, --cm, --service, ...) is deferred
+// until the ui and the rest of the platform layer land, so the binary stays a
+// step placeholder. It links the rustdesk library: the server connection
+// loop and entry points (start_server, RendezvousMediator::start_all) on top
+// of ipc, client, mediator and hbb_common.
 //
 // Build + test happen in GitHub Actions (.github/workflows/ci.yml); see
 // README.md for the equivalent local commands.
@@ -14,6 +15,6 @@
 
 int main() {
     std::cout << "cppdesk " << cppdesk::kVersion
-              << " step 14 (d1013487 part 11): + ipc — connection/ui/platform pending.\n";
+              << " step 15 (d1013487 part 12): + server connection — ui/platform pending.\n";
     return 0;
 }

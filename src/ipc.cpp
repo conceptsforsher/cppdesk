@@ -746,6 +746,23 @@ std::optional<Data> Connection::next() {
     return decode_frame(*bytes);  // no deadline: recv_frame returns or throws
 }
 
+std::optional<std::optional<Data>> Connection::try_next() {
+    while (true) {
+        if (auto frame = codec_.decode(rbuf_)) {
+            return std::optional<std::optional<Data>>(std::in_place, decode_frame(*frame));
+        }
+        if (!conn_.wait_readable(0)) {
+            return std::nullopt;  // nothing more right now; a partial frame stays buffered
+        }
+        uint8_t chunk[16384];
+        const size_t n = conn_.read(chunk, sizeof chunk);  // throws on I/O error
+        if (n == 0) {
+            throw std::runtime_error("reset by the peer");
+        }
+        rbuf_.insert(rbuf_.end(), chunk, chunk + n);
+    }
+}
+
 std::optional<Data> Connection::next_timeout(uint64_t ms_timeout) {
     const auto bytes = recv_frame(deadline_after(ms_timeout));
     if (!bytes) {

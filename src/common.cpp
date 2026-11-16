@@ -2,9 +2,13 @@
 #include <rustdesk/common.hpp>
 
 #include <rustdesk/ipc.hpp>
+#include <rustdesk/process.hpp>
+#include <rustdesk/whoami.hpp>
 
 #include <cppdesk/version.hpp>
 
+#include <hbb_common/compress.hpp>
+#include <hbb_common/json.hpp>
 #include <hbb_common/tcp.hpp>
 #include <hbb_common/udp.hpp>
 
@@ -13,7 +17,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 #include <cerrno>
 
@@ -268,52 +274,35 @@ int64_t get_version_number(const std::string& v) {
 }
 
 std::string username() {
-#if defined(__unix__) || defined(__APPLE__)
-    char buf[256] = {};
-    if (::getlogin_r(buf, sizeof buf) == 0 && buf[0] != '\0') {
-        // trim_end_matches('\0') parity (getlogin_r NUL-pads the buffer).
-        return std::string(buf, strnlen(buf, sizeof buf));
+    // fix bug of whoami
+    std::string name = whoami::username();
+    while (!name.empty() && name.back() == '\0') {
+        name.pop_back();  // trim_end_matches('\0')
     }
-#endif
-    if (const char* env = std::getenv("USER")) {
-        return env;
-    }
-    if (const char* env = std::getenv("USERNAME")) {
-        return env;
-    }
-    return "";
+    return name;
 }
 
-void run_me(const std::vector<std::string>& args) {
-    // current_exe() parity via /proc/self/exe (Linux; platform step refines).
-    char exe[4096] = {};
-    const ssize_t n = ::readlink("/proc/self/exe", exe, sizeof exe - 1);
-    if (n <= 0) {
-        throw std::system_error(errno, std::generic_category(), "readlink /proc/self/exe");
+intptr_t run_me(const std::vector<std::string>& args) {
+    const std::string cmd = process::current_exe();  // `?`
+    return process::spawn(cmd, args);
+}
+
+void update_clipboard(const hbb::Clipboard& clipboard) {
+    const std::vector<uint8_t> content =
+        clipboard.compress()
+            ? hbb_common::decompress(reinterpret_cast<const uint8_t*>(clipboard.content().data()),
+                                     clipboard.content().size())
+            : std::vector<uint8_t>(clipboard.content().begin(), clipboard.content().end());
+    if (!hbb_common::json::is_valid_utf8(
+            std::string_view(reinterpret_cast<const char*>(content.data()), content.size()))) {
+        return;  // String::from_utf8 failed
     }
-    const pid_t pid = ::fork();
-    if (pid < 0) {
-        throw std::system_error(errno, std::generic_category(), "fork");
-    }
-    if (pid == 0) {
-        // Child: detach and exec (double-fork so the caller never reaps).
-        if (::fork() != 0) {
-            _exit(0);
-        }
-        ::setsid();
-        std::vector<char*> argv;
-        argv.push_back(exe);
-        std::vector<std::string> owned = args;
-        for (auto& a : owned) {
-            argv.push_back(a.data());
-        }
-        argv.push_back(nullptr);
-        ::execv(exe, argv.data());
-        _exit(127);
-    }
-    int status = 0;  // reap the intermediate child only
-    while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
-    }
+    // match ClipboardContext::new(): the clipboard seam (see the header)
+    // always takes the Err arm for now:
+    // log::error!("Failed to create clipboard context: {}", err);
+    // The Ok arm, for the clipboard step:
+    //   *CONTENT.lock().unwrap() = content.clone();
+    //   allow_err!(ctx.set_contents(content));
 }
 
 void test_nat_type() {

@@ -146,4 +146,8 @@ Value parse(std::string_view text);
 // (U+D800..U+DFFF), code points above U+10FFFF and truncated sequences.
 bool is_valid_utf8(std::string_view bytes);
 
+// String::from_utf8_lossy parity: each maximal invalid subsequence (Rust's
+// Utf8Chunks rule) becomes one U+FFFD. Valid input comes back unchanged.
+std::string from_utf8_lossy(std::string_view bytes);
+
 }  // namespace hbb_common::json
